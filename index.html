@@ -623,7 +623,8 @@ function mergeLog(A,B){
 /* =============== 家庭同步（Supabase） =============== */
 let applyingSync = false;
 const SYNC_KEY = 'xng_sync';
-let syncCfg = (()=>{ try{ return JSON.parse(localStorage.getItem(SYNC_KEY)||'null') }catch(e){ return null } })(); // {url,key,room,name}
+let syncCfg = (()=>{ try{ return JSON.parse(localStorage.getItem(SYNC_KEY)||'null') }catch(e){ return null } })(); // {url,key,room,name,wkey}
+if(syncCfg && syncReady() && !syncCfg.wkey){ syncCfg.wkey = randHex(24); saveSyncCfg(); }
 let syncTimer = null, syncStatus = 'off', lastSync = 0;
 const SYNC_COLLS = [['food','food'],['poop','poop'],['daily','daily'],['exp','exp'],['diaper','diaper'],['anniv','anniv'],['bf','bf'],['sup','sup'],['remind','remind'],['vac','vac'],['growth','growth']];
 function syncReady(){ return !!(syncCfg && syncCfg.url && syncCfg.key && syncCfg.room); }
@@ -664,6 +665,7 @@ function b64u(s){ return btoa(unescape(encodeURIComponent(s))); }
 function b64uDec(s){ return decodeURIComponent(escape(atob(s))); }
 function bufToB64(buf){ const b=new Uint8Array(buf); let s=''; for(let i=0;i<b.length;i++) s+=String.fromCharCode(b[i]); return btoa(s); }
 function b64ToBuf(b64){ const s=atob(b64); const b=new Uint8Array(s.length); for(let i=0;i<s.length;i++) b[i]=s.charCodeAt(i); return b; }
+function randHex(n){ const a=new Uint8Array(n); (crypto||window.crypto).getRandomValues(a); let s=''; for(let i=0;i<a.length;i++) s+=a[i].toString(16).padStart(2,'0'); return s; }
 let _dk=null, _dkFor=null;
 async function deriveKey(pwd){
   if(_dkFor===pwd && _dk) return _dk;
@@ -695,14 +697,22 @@ async function pullState(){
 }
 async function createRow(data){
   const c = getClient();
-  const { error } = await c.from('family_state').insert({ room: syncCfg.room, rev:1, data });
-  if(error) throw new Error('create ' + (error.code || error.message));
+  try{
+    const { error } = await c.from('family_state').insert({ room: syncCfg.room, rev:1, data, wkey: syncCfg.wkey });
+    if(error){
+      if(/wkey|column/i.test(error.message)){ const { error:e2 } = await c.from('family_state').insert({ room: syncCfg.room, rev:1, data }); if(e2) throw new Error('create ' + (e2.code||e2.message)); }
+      else throw new Error('create ' + (error.code || error.message));
+    }
+  }catch(e){ throw e; }
 }
 async function patchRow(data, baseRev){
   const c = getClient();
-  const { data:r, error } = await c.from('family_state').update({ data, rev: baseRev+1 }).eq('room', syncCfg.room).eq('rev', baseRev).select();
-  if(error) throw new Error('patch ' + (error.code || error.message));
-  return (r && r.length) ? r.length : 0;
+  let res = await c.from('family_state').update({ data, rev: baseRev+1, wkey: syncCfg.wkey }).eq('room', syncCfg.room).eq('rev', baseRev).select();
+  if(res.error && /wkey|column/i.test(res.error.message)){
+    res = await c.from('family_state').update({ data, rev: baseRev+1 }).eq('room', syncCfg.room).eq('rev', baseRev).select();
+  }
+  if(res.error) throw new Error('patch ' + (res.error.code || res.error.message));
+  return (res.data && res.data.length) ? res.data.length : 0;
 }
 function buildSyncData(){
   return { baby, food:foods, poop:poops, daily:dailys, exp:exps, diaper:diapers, anniv:annivs, bf:breastfeed, sup:supplements, remind:reminders, vac:vaccines, growth:growths, tomb:tombstones, log:logs, ver:4 };
@@ -813,7 +823,9 @@ async function saveSync(){
   const name = (g('sy_name').value || '').trim();
   const pwd = (g('sy_pwd').value || '').trim();
   if(!url || !key || !room){ toast('请填全 Supabase 地址、密钥和房间码'); return; }
-  syncCfg = { url, key, room, name, pwd };
+  const oldRoom = (syncCfg && syncCfg.room) || '';
+  const wkey = (syncCfg && syncCfg.wkey && oldRoom === room) ? syncCfg.wkey : randHex(24);
+  syncCfg = { url, key, room, name, pwd, wkey };
   saveSyncCfg();
   g('sy_msg').textContent = '正在连接测试…';
   try{
@@ -866,7 +878,7 @@ function renderLog(){
 }
 async function shareQR(){
   if(!syncReady()){ toast('请先填好地址/密钥/房间码并保存，再生成分享二维码'); return; }
-  const obj = { url: syncCfg.url, key: syncCfg.key, room: syncCfg.room };
+  const obj = { url: syncCfg.url, key: syncCfg.key, room: syncCfg.room, wkey: syncCfg.wkey };
   const token = b64u(JSON.stringify(obj));
   const link = (location.href.split('?')[0].split('#')[0]) + '?cfg=' + token;
   const box = document.getElementById('qr_box');
@@ -894,7 +906,7 @@ function applyCfgFromUrl(){
       if(g('sy_url')) g('sy_url').value = obj.url;
       if(g('sy_key')) g('sy_key').value = obj.key;
       if(g('sy_room')) g('sy_room').value = obj.room;
-      syncCfg = { url:obj.url, key:obj.key, room:obj.room, name:'', pwd:'' };
+      syncCfg = { url:obj.url, key:obj.key, room:obj.room, name:'', pwd:'', wkey: obj.wkey || '' };
       saveSyncCfg();
       toast('已通过扫码导入配置，填写昵称（和密码）后点「保存并连接」');
       if(history.replaceState) history.replaceState(null, '', location.pathname);
