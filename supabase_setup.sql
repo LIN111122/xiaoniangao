@@ -66,4 +66,8 @@ CREATE POLICY "anon_family_sync_update"
 -- 5) 加速按房间码查询
 CREATE INDEX IF NOT EXISTS idx_family_state_room ON public.family_state (room);
 
-SELECT room, rev, updated_at FROM public.family_state LIMIT 1;
+-- 6) 刷新 PostgREST schema 缓存，让 REST 接口识别新增的 wkey 列
+--    （否则 App 写入 wkey 时会报「找不到该列」的错误）
+NOTIFY pgrst, 'reload schema';
+
+SELECT room, rev, updated_at, 'schema reloaded' AS note FROM public.family_state LIMIT 1;
